@@ -1,0 +1,8 @@
+def main(args):
+  let l = [395, 476, 1453, args] in
+  let r = [[], args, 0, [], args, []] in
+  let _ = r[2] := r in
+  let _ = r[3] := l in
+  let _ = args[0] := l in
+  let _ = args[2] := r in
+  args

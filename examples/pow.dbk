@@ -1,0 +1,6 @@
+def main(x):
+   let x = x[0] in
+  def pow(n):
+     if n == 0: 1 else: x * pow(n - 1)
+   in
+   pow(8)

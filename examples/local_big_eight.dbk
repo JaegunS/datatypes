@@ -1,0 +1,8 @@
+extern print(x)
+
+def main(inp):
+  let inp = inp[0] in
+  def big_fun_eight(x1, x2, x3, x4, x5, x6, x7, x8):
+    x1 * x2 * x3 * x4 * x5 * x6 * x7 * x8
+  in
+  big_fun_eight(8,7,6,5,4,3,2,1) - inp

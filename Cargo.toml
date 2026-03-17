@@ -1,0 +1,24 @@
+[package]
+name = "diamondback"
+version = "0.1.0"
+edition = "2024"
+default-run = "snake"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "migrate"
+path = "bin/migrate.rs"
+
+[[bin]]
+name = "snake"
+path = "src/main.rs"
+
+[dependencies]
+tempfile = "3.24"
+walkdir = "2.5"
+colored = "3.0"
+lalrpop-util = { version = "0.22", features = ["lexer"] }
+regex = "1.12"
+clap = { version = "4.5", features = ["derive"] }
+im = "15.1"

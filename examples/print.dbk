@@ -1,0 +1,8 @@
+extern print(x)
+def main(x):
+  let x = x[0] in
+  let a1 = print(1),
+      a2 = print(2),
+      a3 = print(3),
+      a4 = print(4)
+  in a1 * a2 * a3 * a4

@@ -1,0 +1,8 @@
+def main(arg):
+  let arg = arg[0] in
+  def foo(x,y,z):
+    x+y-z
+  in
+
+  let x = foo(3,4,5) in
+  x + arg

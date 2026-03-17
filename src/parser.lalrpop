@@ -1,0 +1,184 @@
+use std::str::FromStr;
+use crate::ast::{
+    SurfProg, SurfExpr, SurfBinding, SurfFunDecl, SurfExtDecl,
+    Prog, Expr, Binding, FunDecl, ExtDecl, Prim,
+};
+use crate::span::SrcLoc;
+use crate::types::Type;
+use lalrpop_util::ParseError;
+
+grammar;
+
+Boxed<T>: Box<T> = {
+  <T> => Box::new(<>)
+}
+
+Spanned<T>: (T, SrcLoc) = {
+    <l:@L> <value:T> <r:@R> => (value, SrcLoc::new(l, r))
+}
+
+Comma<T>: Vec<T> = {
+    <mut v: (<T> ",")*> <last:T?> => {
+        match last {
+            None => { },
+            Some(t) => { v.push(t); }
+        };
+        v
+    }
+}
+
+pub Prog: SurfProg =
+    <externs:Extern*>
+    <l:@L>
+        "def" <name:IdStr> "(" <param:Spanned<Id>> ")" ":" <body:Expr>
+    <r:@R> =>? {
+        if name == "main" {
+            Ok(Prog { externs, name: name.to_string(), param, body, loc: SrcLoc::new(l, r) })
+        } else {
+            Err(ParseError::UnrecognizedToken {
+                token: (l, lalrpop_util::lexer::Token(l, name), r),
+                expected: vec!["main".to_string()],
+            })
+        }
+    };
+
+pub Expr: SurfExpr = {
+    Let,
+    If,
+    FunDefs,
+    PrimExpr,
+}
+
+Let: SurfExpr = {
+    <l:@L> "let" <bindings:Bindings> "in" <body:Boxed<Expr>> <r:@R> =>
+        Expr::Let { bindings, body, loc: SrcLoc::new(l, r) },
+}
+
+Bindings: Vec<SurfBinding> = {
+    <mut bs:(<Binding> ",")*> <b:Binding> => {
+        bs.push(b);
+        bs
+    }
+}
+
+Binding: SurfBinding = {
+    <var:Spanned<Id>> "=" <expr:Expr> => Binding { var, expr },
+}
+
+If: SurfExpr = {
+    <l:@L> "if" <cond:Boxed<Expr>> ":" <thn:Boxed<Expr>> "else" ":" <els:Boxed<Expr>> <r:@R> =>
+        Expr::If { cond, thn, els, loc: SrcLoc::new(l, r) },
+}
+
+FunDefs: SurfExpr = {
+    <l:@L> <mut decls: (<FunDecl> "and")*> <last:FunDecl> "in" <body: Boxed<Expr>> <r:@R> => {
+        decls.push(last);
+        Expr::FunDefs { decls, body, loc: SrcLoc::new(l, r) }
+    }
+}
+
+FunDecl: SurfFunDecl = {
+    <l:@L> "def" <fun:Id> "(" <params:Comma<Spanned<Id>>> ")" ":" <body:Expr> <r:@R> => {
+        FunDecl { name: fun, params, body, loc: SrcLoc::new(l, r) }
+    }
+}
+
+pub Extern: SurfExtDecl = {
+    <l:@L> "extern" <name:IdStr> "(" <params:Comma<Spanned<Id>>> ")" <r:@R> =>? {
+        if name == "entry" {
+            Err(ParseError::UnrecognizedToken {
+                token: (l, lalrpop_util::lexer::Token(l, name), r),
+                expected: vec!["!entry".to_string()],
+            })
+        } else {
+            Ok(ExtDecl { name: name.to_string(), params, loc: SrcLoc::new(l, r) })
+        }
+    }
+}
+
+LAssoc<Op, Next>: SurfExpr = {
+    <l:@L> <e1:LAssoc<Op, Next>> <prim:Op> <e2:Next> <r:@R> =>
+        Expr::Prim { prim, args: vec![e1, e2], loc: SrcLoc::new(l, r) },
+    Next
+}
+
+RAssoc<Op, Next>: SurfExpr = {
+    <l:@L> <e1:Next> <prim:Op> <e2:RAssoc<Op, Next>> <r:@R> =>
+        Expr::Prim { prim, args: vec![e1, e2], loc: SrcLoc::new(l, r) },
+    Next
+}
+
+PrimExpr = ArrExpr;
+
+ArrExpr: SurfExpr = {
+    LogExpr,
+    <l:@L> <a: BaseExpr> "[" <i: Expr> "]" ":=" <v: ArrExpr> <r:@R> =>
+        Expr::Prim { prim: Prim::ArraySet, args: vec![a, i, v], loc: SrcLoc::new(l, r) }
+}
+
+LogExpr = RAssoc<Log, CmpExpr>;
+Log: Prim = {
+    "&&" => Prim::And,
+    "||" => Prim::Or,
+}
+
+CmpExpr = LAssoc<Cmp, SumExpr>;
+Cmp: Prim = {
+    "<" => Prim::Lt,
+    "<=" => Prim::Le,
+    ">" => Prim::Gt,
+    ">=" => Prim::Ge,
+    "==" => Prim::Eq,
+    "!=" => Prim::Neq,
+}
+
+SumExpr = LAssoc<PlusMinus, PrdExpr>;
+PlusMinus: Prim = {
+    "+" => Prim::Add,
+    "-" => Prim::Sub,
+}
+
+PrdExpr = LAssoc<Times, NotExpr>;
+Times: Prim = {
+    "*" => Prim::Mul
+}
+
+NotExpr: SurfExpr = {
+    <l:@L> "!" <e:BaseExpr> <r:@R> =>
+        Expr::Prim { prim: Prim::Not, args: vec![e], loc: SrcLoc::new(l, r) },
+    BaseExpr
+}
+
+BaseExpr: SurfExpr = {
+    <l:@L> <var:Id> <r:@R> => Expr::Var(var, SrcLoc::new(l, r)),
+    <l:@L> <num:Num> <r:@R> => Expr::Num(num, SrcLoc::new(l, r)),
+    <l:@L> <bool:Bool> <r:@R> => Expr::Bool(bool, SrcLoc::new(l, r)),
+    <l:@L> <prim:Prim1> "(" <e:Expr> ")" <r:@R> =>
+        Expr::Prim { prim, args: vec![e], loc: SrcLoc::new(l, r) },
+    <l:@L> <fun: Id> "(" <args: Comma<Expr> > ")" <r:@R> =>
+        Expr::Call { fun, args, loc: SrcLoc::new(l, r) },
+    <l:@L> <a: BaseExpr> "[" <e: Expr> "]" <r:@R> =>
+        Expr::Prim { prim: Prim::ArrayGet, args: vec![a, e], loc: SrcLoc::new(l, r) },
+    <l:@L> "[" <es: Comma<Expr>> "]" <r:@R> =>
+        Expr::Prim { prim: Prim::MakeArray, args: es, loc: SrcLoc::new(l, r) },
+    "(" <Expr> ")" => <>,
+}
+
+Prim1: Prim = {
+    "add1" => Prim::Add1,
+    "sub1" => Prim::Sub1,
+    "isInt" => Prim::IsType(Type::Integer),
+    "isBool" => Prim::IsType(Type::Boolean),
+    "isArray" => Prim::IsType(Type::Array),
+    "newArray" => Prim::NewArray,
+    "length" => Prim::Length,
+}
+
+Array<T>: Vec<T> = "[" <ts: Comma<T>> "]" => ts;
+Num: i64 = <s:r"[+-]?[0-9]+"> => i64::from_str(s).unwrap();
+IdStr: &'input str = <r"[a-zA-Z_][a-zA-Z0-9_]*">;
+Id: String = <s:IdStr> => String::from(s);
+Bool: bool = {
+    "true" => true,
+    "false" => false,
+}

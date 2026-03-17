@@ -1,0 +1,7 @@
+def main(x):
+let x = x[0] in
+  def peano_sum(n, acc):
+  if n <= 0 : acc else: peano_sum(sub1(n), 1 + acc)
+in
+
+peano_sum(x, 1)
