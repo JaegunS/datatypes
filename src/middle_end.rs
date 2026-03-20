@@ -74,6 +74,18 @@ impl From<Resolver> for Lowerer {
     }
 }
 
+/// OPTIONAL:
+/// Determine which functions should be lambda lifted.
+/// If you skip this (which is totally fine), the default implementation
+/// should lift all functions that are defined.
+fn should_lift(prog: &BoundProg) -> std::collections::HashSet<FunName> {
+    /*todo:should_lift not implemented*/
+    let mut lifter = Lifter::new();
+    lifter.lift_prog(prog);
+    lifter.should_lift()
+    /*end*/
+}
+
 /// Traverse the AST and collect the live variables at the start of each function.
 /// Also collect the functions that are non-tail called and the functions that are called
 /// by a lifted function, either tail or non-tail.
@@ -212,15 +224,91 @@ impl Lowerer {
         &mut self, e: BoundExpr, live: &[VarName], subst: &Substitution, k: Continuation,
     ) -> BlockBody {
         match e {
-            Expr::Num(n, _) => {
-                todo!("implement this")
-            }
-            Expr::Bool(b, _) => {
-                todo!("implement this")
-            }
+            Expr::Num(n, _) => k.invoke(Immediate::Const(n)),
+            Expr::Bool(b, _) => k.invoke(Immediate::Const(if b { 1 } else { 0 })),
             Expr::Var(v, _) => k.invoke(Immediate::Var(subst.run(v))),
             Expr::Prim { prim, args, loc: _ } => {
-                todo!("implement these primitive operators")
+                // prepare the arguments
+                let (args_var, args_imm): (Vec<_>, Vec<_>) = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _arg)| {
+                        // the arguments are named after the primitive name and the argument index
+                        let var = self.vars.fresh(format!("{:?}_{}", prim, i));
+                        (var.clone(), Immediate::Var(var))
+                    })
+                    .unzip();
+                let (dest, next) = self.kont_to_block(k);
+                let prim1 = |prim: ssa::Prim2, imm: Immediate, next| {
+                    let dest = dest.clone();
+                    let op = Operation::Prim2(prim, args_imm[0].to_owned(), imm);
+                    BlockBody::Operation { dest, op, next: Box::new(next) }
+                };
+                let prim2 = |prim: ssa::Prim2, next| {
+                    let dest = dest.clone();
+                    let op = Operation::Prim2(prim, args_imm[0].to_owned(), args_imm[1].to_owned());
+                    BlockBody::Operation { dest, op, next: Box::new(next) }
+                };
+                let mut prim2_logical = |prim: ssa::Prim2, next| {
+                    let dest = dest.clone();
+                    let sanitized = Vec::from_iter(args_imm.iter().enumerate().map(|(i, _)| {
+                        let var = self.vars.fresh(format!("san_{}", i)).clone();
+                        (var.clone(), Immediate::Var(var))
+                    }));
+                    BlockBody::Operation {
+                        dest: sanitized[0].0.clone(),
+                        op: Operation::Prim1(Prim1::IntToBool, args_imm[0].to_owned()),
+                        next: Box::new(BlockBody::Operation {
+                            dest: sanitized[1].0.clone(),
+                            op: Operation::Prim1(Prim1::IntToBool, args_imm[1].to_owned()),
+                            next: Box::new(BlockBody::Operation {
+                                dest,
+                                op: Operation::Prim2(
+                                    prim,
+                                    sanitized[0].1.to_owned(),
+                                    sanitized[1].1.to_owned(),
+                                ),
+                                next: Box::new(next),
+                            }),
+                        }),
+                    }
+                };
+                let block = match prim {
+                    ast::Prim::Add1 => prim1(ssa::Prim2::Add, Immediate::Const(1), next),
+                    ast::Prim::Sub1 => prim1(ssa::Prim2::Sub, Immediate::Const(1), next),
+                    ast::Prim::Not => {
+                        let tmp = self.vars.fresh("san_not");
+                        BlockBody::Operation {
+                            dest: tmp.clone(),
+                            op: Operation::Prim1(Prim1::IntToBool, args_imm[0].to_owned()),
+                            next: Box::new(BlockBody::Operation {
+                                dest,
+                                op: Operation::Prim2(
+                                    ssa::Prim2::BitXor,
+                                    Immediate::Const(1),
+                                    Immediate::Var(tmp),
+                                ),
+                                next: Box::new(next),
+                            }),
+                        }
+                    }
+                    ast::Prim::Add => prim2(ssa::Prim2::Add, next),
+                    ast::Prim::Sub => prim2(ssa::Prim2::Sub, next),
+                    ast::Prim::Mul => prim2(ssa::Prim2::Mul, next),
+                    ast::Prim::And => prim2_logical(ssa::Prim2::BitAnd, next),
+                    ast::Prim::Or => prim2_logical(ssa::Prim2::BitOr, next),
+                    ast::Prim::Lt => prim2(ssa::Prim2::Lt, next),
+                    ast::Prim::Le => prim2(ssa::Prim2::Le, next),
+                    ast::Prim::Gt => prim2(ssa::Prim2::Gt, next),
+                    ast::Prim::Ge => prim2(ssa::Prim2::Ge, next),
+                    ast::Prim::Eq => prim2(ssa::Prim2::Eq, next),
+                    ast::Prim::Neq => prim2(ssa::Prim2::Neq, next),
+                };
+
+                // backwards, so we need to reverse the arguments
+                args.into_iter().zip(args_var).rev().fold(block, |block, (arg, var)| {
+                    self.lower_expr_kont(arg, live, subst, Continuation::Block(var, block))
+                })
             }
             Expr::Let { bindings, body, loc: _ } => {
                 // collect the live variables up to this point
@@ -246,7 +334,71 @@ impl Lowerer {
                 })
             }
             Expr::If { cond, thn, els, loc: _ } => {
-                todo!("implement if expression")
+                let cond_var = self.vars.fresh("cond");
+                let thn_name = self.blocks.fresh("thn");
+                let els_name = self.blocks.fresh("els");
+                let cond_branch = Box::new(self.lower_expr_kont(
+                    *cond,
+                    &live,
+                    subst,
+                    Continuation::Block(
+                        cond_var.clone(),
+                        BlockBody::Terminator(Terminator::ConditionalBranch {
+                            cond: Immediate::Var(cond_var),
+                            thn: thn_name.clone(),
+                            els: els_name.clone(),
+                        }),
+                    ),
+                ));
+
+                // Here is the correct implementation, also optimizing to not create a join point if in tail position
+                match k {
+                    Continuation::Return => {
+                        let mut branch = |label, body: BoundExpr| BasicBlock {
+                            label,
+                            params: Vec::new(),
+                            body: self.lower_expr_kont(body, live, subst, Continuation::Return),
+                        };
+
+                        BlockBody::SubBlocks {
+                            blocks: vec![branch(thn_name, *thn), branch(els_name, *els)],
+                            next: cond_branch,
+                        }
+                    }
+                    // if we have a non-trivial continuation, we create a join point
+                    Continuation::Block(dest, body) => {
+                        // fresh variables for return positions in kontinuations
+                        let thn_var = self.vars.fresh("thn_res");
+                        let els_var = self.vars.fresh("els_res");
+                        let join_name = self.blocks.fresh("jn");
+
+                        let mut branch = |label, expr: BoundExpr, var: VarName| BasicBlock {
+                            label,
+                            params: Vec::new(),
+                            body: self.lower_expr_kont(
+                                expr,
+                                live,
+                                subst,
+                                Continuation::Block(
+                                    var.clone(),
+                                    BlockBody::Terminator(Terminator::Branch(Branch {
+                                        target: join_name.clone(),
+                                        args: vec![Immediate::Var(var)],
+                                    })),
+                                ),
+                            ),
+                        };
+
+                        BlockBody::SubBlocks {
+                            blocks: vec![
+                                branch(thn_name, *thn, thn_var),
+                                branch(els_name, *els, els_var),
+                                BasicBlock { label: join_name, params: vec![dest], body },
+                            ],
+                            next: cond_branch,
+                        }
+                    }
+                }
             }
             Expr::FunDefs { decls, body, loc: _ } => {
                 // create a block name for each function
